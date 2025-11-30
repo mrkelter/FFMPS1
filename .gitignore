@@ -1,0 +1,39 @@
+# Session notes and documentation
+SSH_SETUP_NOTES.md
+
+# Logs
+*.log
+logs/
+*.log.*
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# Editor directories and files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# PowerShell module artifacts
+*.ps1xml
+PSGetModuleInfo.xml
+
+# Test results
+TestResults/
+*.trx
+
+# Build artifacts
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
