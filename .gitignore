@@ -37,3 +37,11 @@ obj/
 *.dll
 *.exe
 *.pdb
+
+# Publishing artifacts
+*.nupkg
+*.zip
+FFMPS1-*/
+
+# Chocolatey build artifacts
+chocolatey/*.nupkg

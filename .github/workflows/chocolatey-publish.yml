@@ -1,0 +1,194 @@
+name: Publish to Chocolatey
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (e.g., 1.0.0)'
+        required: false
+        type: string
+        default: ''
+      skip_tests:
+        description: 'Skip package installation tests'
+        required: false
+        type: boolean
+        default: false
+
+jobs:
+  publish-chocolatey:
+    runs-on: windows-latest
+    
+    steps:
+    - name: Checkout code
+      uses: actions/checkout@v4
+      
+    - name: Get version from release or input
+      id: get_version
+      shell: pwsh
+      run: |
+        $inputVersion = "${{ github.event.inputs.version }}"
+        if ([string]::IsNullOrWhiteSpace($inputVersion)) {
+          # Use version from manifest
+          $manifest = Test-ModuleManifest -Path .\FFmpeg.psd1 -ErrorAction Stop
+          $version = $manifest.Version.ToString()
+          Write-Host "Using manifest version: $version"
+        } else {
+          $version = $inputVersion
+          Write-Host "Using input version: $version"
+        }
+        echo "VERSION=$version" >> $env:GITHUB_OUTPUT
+        echo "::notice::Building version $version"
+        
+    - name: Update module manifest version
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        
+        # Update FFmpeg.psd1
+        $psd1Content = Get-Content FFmpeg.psd1 -Raw
+        $psd1Content = $psd1Content -replace "ModuleVersion = '[\d.]+'", "ModuleVersion = '$version'"
+        $psd1Content | Set-Content FFmpeg.psd1 -NoNewline
+        
+        Write-Host "Updated FFmpeg.psd1 to version $version"
+        
+    - name: Create release archive
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        
+        # Create zip file with module files
+        $files = @('FFmpeg.psd1', 'FFmpeg.psm1', 'README.md')
+        Compress-Archive -Path $files -DestinationPath "FFMPS1-v$version.zip" -Force
+        
+        Write-Host "Created FFMPS1-v$version.zip"
+        Get-Item "FFMPS1-v$version.zip" | Select-Object Name, Length
+        
+    - name: Calculate checksum
+      id: checksum
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        $hash = (Get-FileHash -Algorithm SHA256 "FFMPS1-v$version.zip").Hash
+        echo "CHECKSUM=$hash" >> $env:GITHUB_OUTPUT
+        Write-Host "SHA256 Checksum: $hash"
+        echo "::notice::Checksum: $hash"
+        
+    - name: Update nuspec version
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        
+        $nuspecPath = "chocolatey/ffmps1.nuspec"
+        $nuspec = Get-Content $nuspecPath -Raw
+        $nuspec = $nuspec -replace '<version>[\d.]+</version>', "<version>$version</version>"
+        $nuspec = $nuspec -replace '<releaseNotes>https://github.com/mrkelter/FFMPS1/releases/tag/v[\d.]+</releaseNotes>', "<releaseNotes>https://github.com/mrkelter/FFMPS1/releases/tag/v$version</releaseNotes>"
+        $nuspec | Set-Content $nuspecPath -NoNewline
+        
+        Write-Host "Updated nuspec to version $version"
+        
+    - name: Update install script version
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        
+        $installPath = "chocolatey/tools/chocolateyInstall.ps1"
+        $install = Get-Content $installPath -Raw
+        $install = $install -replace '\$moduleVersion = ''[\d.]+''', "`$moduleVersion = '$version'"
+        $install | Set-Content $installPath -NoNewline
+        
+        Write-Host "Updated install script to version $version"
+        
+    - name: Update uninstall script version
+      shell: pwsh
+      run: |
+        $version = "${{ steps.get_version.outputs.VERSION }}"
+        
+        $uninstallPath = "chocolatey/tools/chocolateyUninstall.ps1"
+        $uninstall = Get-Content $uninstallPath -Raw
+        $uninstall = $uninstall -replace '\$moduleVersion = ''[\d.]+''', "`$moduleVersion = '$version'"
+        $uninstall | Set-Content $uninstallPath -NoNewline
+        
+        Write-Host "Updated uninstall script to version $version"
+        
+    - name: Install Chocolatey
+      shell: pwsh
+      run: |
+        if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+          Write-Host "Installing Chocolatey..."
+          Set-ExecutionPolicy Bypass -Scope Process -Force
+          [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+          iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+        } else {
+          Write-Host "Chocolatey is already installed"
+          choco --version
+        }
+        
+    - name: Pack Chocolatey package
+      shell: pwsh
+      run: |
+        cd chocolatey
+        choco pack ffmps1.nuspec
+        
+        $package = Get-Item *.nupkg | Select-Object -First 1
+        Write-Host "Created package: $($package.Name)"
+        echo "::notice::Package created: $($package.Name)"
+        
+    - name: Test package installation
+      if: inputs.skip_tests != true
+      shell: pwsh
+      run: |
+        cd chocolatey
+        
+        Write-Host "Testing package installation..."
+        choco install ffmps1 -source . -force -y --debug --verbose
+        
+        # Verify module is available
+        $module = Get-Module -ListAvailable FFmpeg
+        if ($module) {
+          Write-Host "Module installed successfully: $($module.Name) v$($module.Version)"
+          echo "::notice::Module verified: FFmpeg v$($module.Version)"
+        } else {
+          Write-Error "Module verification failed!"
+          exit 1
+        }
+        
+    - name: Cleanup test installation
+      if: always()
+      shell: pwsh
+      run: |
+        Write-Host "Cleaning up test installation..."
+        choco uninstall ffmps1 -y
+    - name: Push to Chocolatey.org
+      shell: pwsh
+      env:
+        CHOCO_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+      run: |O_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+      run: |
+        if ([string]::IsNullOrEmpty($env:CHOCO_API_KEY)) {
+          Write-Warning "CHOCOLATEY_API_KEY secret is not set. Skipping publish."
+          echo "::warning::CHOCOLATEY_API_KEY not configured. Package will not be published."
+          exit 0
+        }
+        
+        cd chocolatey
+        
+        Write-Host "Setting Chocolatey API key..."
+        choco apikey --key $env:CHOCO_API_KEY --source https://push.chocolatey.org/
+        
+        Write-Host "Pushing package to Chocolatey.org..."
+        $package = Get-Item *.nupkg | Select-Object -First 1
+        choco push $package.Name --source https://push.chocolatey.org/
+        
+        echo "::notice::Package pushed to Chocolatey.org successfully!"
+        
+    - name: Upload package as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: chocolatey-package
+        path: chocolatey/*.nupkg
+        
+    - name: Upload archive as artifact
+      uses: actions/upload-artifact@v4
+      with:
+        name: module-archive
+        path: FFMPS1-v*.zip

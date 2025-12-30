@@ -1,0 +1,253 @@
+name: Publish Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: 'Version to publish (leave empty to use manifest version)'
+        required: false
+        type: string
+        default: ''
+      target:
+        description: 'Publication target'
+        required: true
+        type: choice
+        options:
+          - all
+          - psgallery
+          - github
+          - chocolatey
+        default: all
+
+permissions:
+  contents: write
+
+jobs:
+  determine-version:
+    name: Determine Version
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Get version
+        id: version
+        shell: pwsh
+        run: |
+          $inputVersion = "${{ inputs.version }}"
+          if ([string]::IsNullOrWhiteSpace($inputVersion)) {
+            $manifest = Test-ModuleManifest -Path .\FFmpeg.psd1 -ErrorAction Stop
+            $version = $manifest.Version.ToString()
+            Write-Host "Using manifest version: $version"
+          } else {
+            $version = $inputVersion
+            Write-Host "Using input version: $version"
+          }
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "::notice::Publishing version: $version"
+  validate:
+    name: Validate Module
+    runs-on: windows-latest
+    needs: determine-version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test module manifest
+        shell: pwsh
+        run: |
+          $manifest = Test-ModuleManifest -Path .\FFmpeg.psd1 -ErrorAction Stop
+          Write-Host "✓ Module manifest is valid"
+          Write-Host "  Name: $($manifest.Name)"
+          Write-Host "  Version: $($manifest.Version)"
+          Write-Host "  Author: $($manifest.Author)"
+
+      - name: Run Pester tests (if available)
+        shell: pwsh
+        run: |
+          if (Test-Path .\Tests) {
+            Install-Module -Name Pester -Force -SkipPublisherCheck
+            Invoke-Pester -Path .\Tests -Output Detailed
+          } else {
+            Write-Host "No tests found, skipping..."
+          }
+  publish-psgallery:
+    name: Publish to PowerShell Gallery
+    runs-on: windows-latest
+    needs: [determine-version, validate]
+    if: inputs.target == 'all' || inputs.target == 'psgallery'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Publish to PowerShell Gallery
+        shell: pwsh
+        env:
+          NUGET_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:NUGET_API_KEY)) {
+            Write-Warning "PSGALLERY_API_KEY secret not set. Skipping publication."
+            exit 0
+          }
+          
+          try {
+            Publish-Module -Path . -NuGetApiKey $env:NUGET_API_KEY -Verbose -ErrorAction Stop
+            Write-Host "✓ Successfully published to PowerShell Gallery"
+          }
+          catch {
+            Write-Error "Failed to publish to PowerShell Gallery: $_"
+            exit 1
+          }
+
+  create-github-release:
+    name: Create GitHub Release
+    runs-on: windows-latest
+    needs: [determine-version, validate]
+    if: inputs.target == 'all' || inputs.target == 'github'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+      - name: Download FFmpeg build
+        shell: pwsh
+        run: |
+          $defaultUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          $ffUrl = if ($env:FFMPEG_DOWNLOAD_URL) { $env:FFMPEG_DOWNLOAD_URL } else { $defaultUrl }
+          Write-Host "Downloading FFmpeg from: $ffUrl"
+          Invoke-WebRequest -Uri $ffUrl -OutFile ffmpeg.zip -UseBasicParsing
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg -Force
+          $bin = Get-ChildItem -Path ffmpeg -Recurse -Directory | Where-Object { $_.Name -eq 'bin' } | Select-Object -First 1
+          if ($bin) {
+            New-Item -ItemType Directory -Path ffmpeg-bin -Force | Out-Null
+            Copy-Item -Path (Join-Path $bin.FullName '*') -Destination .\ffmpeg-bin -Recurse -Force
+            Write-Host "✓ Extracted FFmpeg binaries to .\\ffmpeg-bin"
+          } else {
+            Write-Warning "Could not locate ffmpeg bin directory after extraction"
+          }
+
+      - name: Create module package
+        shell: pwsh
+        run: |
+          $moduleName = "FFMPS1"
+          $version = "${{ needs.determine-version.outputs.version }}"
+          $packageName = "$moduleName-$version"
+          
+          # Create package directory
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $packageName
+          New-Item -ItemType Directory -Path $packageName -Force | Out-Null
+          
+          # Copy module files
+          Copy-Item -Path "FFmpeg.psd1" -Destination $packageName -Force
+          Copy-Item -Path "FFmpeg.psm1" -Destination $packageName -Force
+          Copy-Item -Path "README.md" -Destination $packageName -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "LICENSE" -Destination $packageName -Force -ErrorAction SilentlyContinue
+          
+          # Include FFmpeg binaries if available
+          if (Test-Path .\ffmpeg-bin) {
+            New-Item -ItemType Directory -Path (Join-Path $packageName 'bin') -Force | Out-Null
+            Copy-Item -Path .\ffmpeg-bin\* -Destination (Join-Path $packageName 'bin') -Recurse -Force
+            Write-Host "✓ Included FFmpeg binaries in package $packageName/bin"
+          }
+          
+          # Create zip
+          Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+          
+          Write-Host "✓ Created package: $packageName.zip"
+
+      - name: Upload release asset
+        uses: actions/upload-artifact@v4
+        with:
+          name: FFMPS1-${{ needs.determine-version.outputs.version }}
+          path: FFMPS1-${{ needs.determine-version.outputs.version }}.zip
+
+      - name: Create GitHub Release
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          $version = "${{ needs.determine-version.outputs.version }}"
+          $packageName = "FFMPS1-$version.zip"
+          $releaseTag = "v$version"
+          
+          # Check if release exists, create if it doesn't
+          $releaseExists = gh release view $releaseTag 2>$null
+          if ($LASTEXITCODE -ne 0) {
+            Write-Host "Creating release $releaseTag..."
+            gh release create $releaseTag $packageName --title "Release $version" --notes "Release $version"
+          } else {
+            Write-Host "Uploading to existing release $releaseTag..."
+            gh release upload $releaseTag $packageName --clobber
+          }
+          Write-Host "✓ Published release $releaseTag"
+
+  publish-chocolatey:
+    name: Publish to Chocolatey
+    runs-on: windows-latest
+    needs: [determine-version, validate]
+    if: inputs.target == 'all' || inputs.target == 'chocolatey'
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download FFmpeg build
+        shell: pwsh
+        run: |
+          $defaultUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          $ffUrl = if ($env:FFMPEG_DOWNLOAD_URL) { $env:FFMPEG_DOWNLOAD_URL } else { $defaultUrl }
+          Write-Host "Downloading FFmpeg from: $ffUrl"
+          Invoke-WebRequest -Uri $ffUrl -OutFile ffmpeg.zip -UseBasicParsing
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg -Force
+          $bin = Get-ChildItem -Path ffmpeg -Recurse -Directory | Where-Object { $_.Name -eq 'bin' } | Select-Object -First 1
+          if ($bin) {
+            New-Item -ItemType Directory -Path chocolatey\tools\ffmpeg -Force | Out-Null
+            Copy-Item -Path (Join-Path $bin.FullName '*') -Destination chocolatey\tools\ffmpeg -Recurse -Force
+            Write-Host "✓ Extracted FFmpeg binaries to chocolatey\\tools\\ffmpeg"
+          } else {
+            Write-Warning "Could not locate ffmpeg bin directory after extraction"
+          }
+
+      - name: Update chocolatey package version
+        shell: pwsh
+        run: |
+          if (Test-Path .\chocolatey) {
+            $version = "${{ needs.determine-version.outputs.version }}"
+            $nuspecPath = ".\chocolatey\ffmps1.nuspec"
+            
+            if (Test-Path $nuspecPath) {
+              # Update version in nuspec
+              (Get-Content $nuspecPath) -replace '<version>.*</version>', "<version>$version</version>" | Set-Content $nuspecPath
+              Write-Host "✓ Updated chocolatey version to $version"
+            }
+          } else {
+            Write-Host "No chocolatey directory found, skipping..."
+          }
+
+      - name: Build chocolatey package
+        shell: pwsh
+        run: |
+          if (Test-Path .\chocolatey) {
+            choco pack .\chocolatey\ffmps1.nuspec --outputdirectory .
+            Write-Host "✓ Built chocolatey package"
+          }
+
+      - name: Publish to Chocolatey
+        shell: pwsh
+        env:
+          CHOCO_API_KEY: ${{ secrets.CHOCOLATEY_API_KEY }}
+        run: |
+          if ([string]::IsNullOrEmpty($env:CHOCO_API_KEY)) {
+            Write-Warning "CHOCOLATEY_API_KEY secret not set. Skipping publication."
+            exit 0
+          }
+          
+          $version = "${{ needs.determine-version.outputs.version }}"
+          $package = "ffmps1.$version.nupkg"
+          
+          if (Test-Path $package) {
+            choco apikey --key $env:CHOCO_API_KEY --source https://push.chocolatey.org/
+            choco push $package --source https://push.chocolatey.org/
+            Write-Host "✓ Published to Chocolatey"
+          } else {
+            Write-Warning "Package $package not found, skipping..."
+          }

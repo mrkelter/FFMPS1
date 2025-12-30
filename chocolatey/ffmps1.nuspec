@@ -1,0 +1,38 @@
+<?xml version="1.0" encoding="utf-8"?>
+<package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
+  <metadata>
+    <!-- Required -->
+    <id>ffmps1</id>
+    <version>1.0.0</version>
+    <authors>mrkelter</authors>
+    <description>PowerShell wrapper module for FFmpeg with full discoverability and parameter completion. Provides easy-to-use cmdlets for video/audio conversion, editing, and media manipulation. Includes functions like ConvertTo-VideoFormat, Extract-Audio, Add-Watermark, Create-GIF, Resize-Video, and many more. Makes FFmpeg accessible through intuitive PowerShell cmdlets with built-in parameter validation and help.</description>
+    
+    <!-- Optional but recommended -->
+    <title>FFMPS1 - FFmpeg PowerShell Wrapper</title>
+    <owners>mrkelter</owners>
+    <projectUrl>https://github.com/mrkelter/FFMPS1</projectUrl>
+    <packageSourceUrl>https://github.com/mrkelter/FFMPS1/tree/main/chocolatey</packageSourceUrl>
+    <docsUrl>https://github.com/mrkelter/FFMPS1#readme</docsUrl>
+    <bugTrackerUrl>https://github.com/mrkelter/FFMPS1/issues</bugTrackerUrl>
+    <tags>ffmpeg powershell video audio media conversion encoding cmdlet module wrapper multimedia</tags>
+    <summary>PowerShell wrapper for FFmpeg with intuitive cmdlets for video and audio processing</summary>
+    <licenseUrl>https://github.com/mrkelter/FFMPS1/blob/main/LICENSE</licenseUrl>
+    <requireLicenseAcceptance>false</requireLicenseAcceptance>
+    <!-- <iconUrl>https://rawcdn.githack.com/mrkelter/FFMPS1/main/icon.png</iconUrl> -->
+    <releaseNotes>https://github.com/mrkelter/FFMPS1/releases/tag/v1.0.0</releaseNotes>
+    
+    <!-- Dependencies -->
+    <dependencies>
+      <dependency id="ffmpeg" version="4.4.1" />
+      <dependency id="powershell" version="5.1.0" />
+    </dependencies>
+  </metadata>
+  
+  <files>
+    <!-- Installation scripts -->
+    <file src="tools\**" target="tools" />
+    
+    <!-- Legal files -->
+    <file src="legal\**" target="legal" />
+  </files>
+</package>

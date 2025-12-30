@@ -1,0 +1,44 @@
+VERIFICATION
+============
+
+Verification is intended to assist the Chocolatey moderators and community
+in verifying that this package's contents are trustworthy.
+
+Package Source
+--------------
+This package downloads files from the official FFMPS1 GitHub repository:
+https://github.com/mrkelter/FFMPS1
+
+The package installation script downloads the following files directly from GitHub:
+- FFmpeg.psd1 (PowerShell module manifest)
+- FFmpeg.psm1 (PowerShell module script)
+- README.md (Documentation)
+
+Verification Steps
+------------------
+1. Visit the GitHub repository:
+   https://github.com/mrkelter/FFMPS1
+
+2. Compare the files in the repository with those installed by the package
+
+3. Verify the download URLs in chocolateyInstall.ps1 point to the official repository
+
+4. For tagged releases, verify against the specific release:
+   https://github.com/mrkelter/FFMPS1/releases/tag/v1.0.0
+
+File Integrity
+--------------
+Files are downloaded directly from GitHub's raw content servers during installation.
+You can verify the source by examining chocolateyInstall.ps1 in the tools directory.
+
+Base URL: https://raw.githubusercontent.com/mrkelter/FFMPS1/main/
+
+License
+-------
+The package follows the same license as the source project.
+See: https://github.com/mrkelter/FFMPS1/blob/main/LICENSE
+
+Project Maintainer
+------------------
+GitHub: mrkelter
+Repository: https://github.com/mrkelter/FFMPS1

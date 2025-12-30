@@ -1,0 +1,331 @@
+name: CI - Build and Test
+
+on:
+  push:
+    branches:
+      - main
+      - dev
+      - 'feature/**'
+  pull_request:
+    branches:
+      - main
+      - dev
+
+permissions:
+  contents: read
+
+jobs:
+  determine-version:
+    name: Determine Version
+    runs-on: windows-latest
+    outputs:
+      version: ${{ steps.version.outputs.version }}
+      is_main: ${{ steps.version.outputs.is_main }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Calculate version
+        id: version
+        shell: pwsh
+        run: |
+          $manifest = Test-ModuleManifest -Path .\FFmpeg.psd1 -ErrorAction Stop
+          $baseVersion = $manifest.Version.ToString()
+          
+          # Get branch name
+          $ref = "${{ github.ref }}"
+          $branchName = $ref -replace 'refs/heads/', ''
+          
+          if ($branchName -eq 'main') {
+            $version = $baseVersion
+            $isMain = 'true'
+            Write-Host "Main branch - using version: $version"
+          } else {
+            # Sanitize branch name for semver prerelease
+            $prerelease = $branchName -replace '[^a-zA-Z0-9-]', '-'
+            $prerelease = $prerelease.ToLower()
+            $timestamp = Get-Date -Format 'yyyyMMddHHmmss'
+            $version = "$baseVersion-$prerelease.$timestamp"
+            $isMain = 'false'
+            Write-Host "Dev branch '$branchName' - using version: $version"
+          }
+          
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "is_main=$isMain" >> $env:GITHUB_OUTPUT
+          echo "::notice::Build version: $version"
+
+  validate-module:
+    name: Validate PowerShell Module
+    runs-on: windows-latest
+    needs: determine-version
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Test module manifest
+        shell: pwsh
+        run: |
+          $manifest = Test-ModuleManifest -Path .\FFmpeg.psd1 -ErrorAction Stop
+          Write-Host "✓ Module manifest is valid"
+          Write-Host "  Name: $($manifest.Name)"
+          Write-Host "  Version: $($manifest.Version)"
+          Write-Host "  Author: $($manifest.Author)"
+
+      - name: Run Pester tests
+        shell: pwsh
+        run: |
+          if (Test-Path .\Tests) {
+            Install-Module -Name Pester -Force -SkipPublisherCheck
+            Invoke-Pester -Path .\Tests -Output Detailed
+          } else {
+            Write-Host "No tests found, skipping..."
+          }
+
+      - name: Test module import
+        shell: pwsh
+        run: |
+          Import-Module .\FFmpeg.psd1 -Force
+          $module = Get-Module FFmpeg
+          if ($module) {
+            Write-Host "✓ Module imported successfully"
+            Write-Host "  Commands exported: $($module.ExportedCommands.Count)"
+          } else {
+            Write-Error "Failed to import module"
+            exit 1
+          }
+
+  build-module-package:
+    name: Build Module Package
+    runs-on: windows-latest
+    needs: [determine-version, validate-module]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download FFmpeg build
+        shell: pwsh
+        run: |
+          $defaultUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          $ffUrl = if ($env:FFMPEG_DOWNLOAD_URL) { $env:FFMPEG_DOWNLOAD_URL } else { $defaultUrl }
+          Write-Host "Downloading FFmpeg from: $ffUrl"
+          Invoke-WebRequest -Uri $ffUrl -OutFile ffmpeg.zip -UseBasicParsing
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg -Force
+          $bin = Get-ChildItem -Path ffmpeg -Recurse -Directory | Where-Object { $_.Name -eq 'bin' } | Select-Object -First 1
+          if ($bin) {
+            New-Item -ItemType Directory -Path ffmpeg-bin -Force | Out-Null
+            Copy-Item -Path (Join-Path $bin.FullName '*') -Destination .\ffmpeg-bin -Recurse -Force
+            Write-Host "✓ Extracted FFmpeg binaries to .\\ffmpeg-bin"
+          } else {
+            Write-Warning "Could not locate ffmpeg bin directory after extraction"
+          }
+
+      - name: Create module package
+        shell: pwsh
+        run: |
+          $version = "${{ needs.determine-version.outputs.version }}"
+          $packageName = "FFMPS1-$version"
+
+          # Create package directory
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue $packageName
+          New-Item -ItemType Directory -Path $packageName -Force | Out-Null
+
+          # Copy module files
+          Copy-Item -Path "FFmpeg.psd1" -Destination $packageName -Force
+          Copy-Item -Path "FFmpeg.psm1" -Destination $packageName -Force
+          Copy-Item -Path "README.md" -Destination $packageName -Force -ErrorAction SilentlyContinue
+          Copy-Item -Path "LICENSE" -Destination $packageName -Force -ErrorAction SilentlyContinue
+
+          # Include FFmpeg binaries if available
+          if (Test-Path .\ffmpeg-bin) {
+            New-Item -ItemType Directory -Path (Join-Path $packageName 'bin') -Force | Out-Null
+            Copy-Item -Path .\ffmpeg-bin\* -Destination (Join-Path $packageName 'bin') -Recurse -Force
+            Write-Host "✓ Included FFmpeg binaries in package $packageName/bin"
+          }
+
+          # Create zip
+          Compress-Archive -Path $packageName -DestinationPath "$packageName.zip" -Force
+
+          Write-Host "✓ Created package: $packageName.zip"
+
+      - name: Upload module package
+        uses: actions/upload-artifact@v4
+        with:
+          name: module-package-${{ needs.determine-version.outputs.version }}
+          path: FFMPS1-${{ needs.determine-version.outputs.version }}.zip
+          retention-days: 90
+
+  build-chocolatey-package:
+    name: Build Chocolatey Package
+    runs-on: windows-latest
+    needs: [determine-version, validate-module]
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Download FFmpeg build
+        shell: pwsh
+        run: |
+          $defaultUrl = 'https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip'
+          $ffUrl = if ($env:FFMPEG_DOWNLOAD_URL) { $env:FFMPEG_DOWNLOAD_URL } else { $defaultUrl }
+          Write-Host "Downloading FFmpeg from: $ffUrl"
+          Invoke-WebRequest -Uri $ffUrl -OutFile ffmpeg.zip -UseBasicParsing
+          Expand-Archive -Path ffmpeg.zip -DestinationPath ffmpeg -Force
+          $bin = Get-ChildItem -Path ffmpeg -Recurse -Directory | Where-Object { $_.Name -eq 'bin' } | Select-Object -First 1
+          if ($bin) {
+            New-Item -ItemType Directory -Path chocolatey\tools\ffmpeg -Force | Out-Null
+            Copy-Item -Path (Join-Path $bin.FullName '*') -Destination chocolatey\tools\ffmpeg -Recurse -Force
+            Write-Host "✓ Extracted FFmpeg binaries to chocolatey\\tools\\ffmpeg"
+          } else {
+            Write-Warning "Could not locate ffmpeg bin directory after extraction"
+          }
+
+      - name: Update nuspec version
+        shell: pwsh
+        run: |
+          $version = "${{ needs.determine-version.outputs.version }}"
+
+          # Update nuspec
+          $nuspecPath = "chocolatey/ffmps1.nuspec"
+          if (Test-Path $nuspecPath) {
+            $nuspec = Get-Content $nuspecPath -Raw
+            $nuspec = $nuspec -replace '<version>[\d.]+(-[\w.]+)?</version>', "<version>$version</version>"
+            $nuspec = $nuspec -replace '<releaseNotes>https://github.com/mrkelter/FFMPS1/releases/tag/v[\d.]+(-[\w.]+)?</releaseNotes>', "<releaseNotes>https://github.com/mrkelter/FFMPS1/releases/tag/v$version</releaseNotes>"
+            $nuspec | Set-Content $nuspecPath -NoNewline
+            Write-Host "✓ Updated nuspec to version $version"
+          } else {
+            Write-Warning "No nuspec found at $nuspecPath"
+          }
+
+      - name: Update install script version
+        shell: pwsh
+        run: |
+          $version = "${{ needs.determine-version.outputs.version }}"
+
+          $installPath = "chocolatey/tools/chocolateyInstall.ps1"
+          if (Test-Path $installPath) {
+            $install = Get-Content $installPath -Raw
+            $install = $install -replace '\$moduleVersion = ''[\d.]+(-[\w.]+)?''', "`$moduleVersion = '$version'"
+            $install | Set-Content $installPath -NoNewline
+            Write-Host "✓ Updated install script to version $version"
+          }
+
+      - name: Update uninstall script version
+        shell: pwsh
+        run: |
+          $version = "${{ needs.determine-version.outputs.version }}"
+
+          $uninstallPath = "chocolatey/tools/chocolateyUninstall.ps1"
+          if (Test-Path $uninstallPath) {
+            $uninstall = Get-Content $uninstallPath -Raw
+            $uninstall = $uninstall -replace '\$moduleVersion = ''[\d.]+(-[\w.]+)?''', "`$moduleVersion = '$version'"
+            $uninstall | Set-Content $uninstallPath -NoNewline
+            Write-Host "✓ Updated uninstall script to version $version"
+          }
+
+      - name: Create release archive
+        shell: pwsh
+        run: |
+          $version = "${{ needs.determine-version.outputs.version }}"
+          $files = @('FFmpeg.psd1', 'FFmpeg.psm1', 'README.md', 'LICENSE')
+          Compress-Archive -Path $files -DestinationPath "FFMPS1-v$version.zip" -Force
+          Write-Host "✓ Created FFMPS1-v$version.zip"
+
+      - name: Calculate checksum
+        shell: pwsh
+        run: |
+          $version = "${{ needs.determine-version.outputs.version }}"
+          $hash = (Get-FileHash -Algorithm SHA256 "FFMPS1-v$version.zip").Hash
+          Write-Host "SHA256 Checksum: $hash"
+
+      - name: Install Chocolatey (for packing/testing)
+        shell: pwsh
+        run: |
+          if (-not (Get-Command choco -ErrorAction SilentlyContinue)) {
+            Write-Host "Installing Chocolatey..."
+            Set-ExecutionPolicy Bypass -Scope Process -Force
+            [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.ServicePointManager]::SecurityProtocol -bor 3072
+            iex ((New-Object System.Net.WebClient).DownloadString('https://community.chocolatey.org/install.ps1'))
+          } else {
+            Write-Host "Chocolatey is already installed"
+            choco --version
+          }
+
+      - name: Pack Chocolatey package
+        shell: pwsh
+        run: |
+          if (Test-Path .\chocolatey\ffmps1.nuspec) {
+            cd chocolatey
+            choco pack ffmps1.nuspec
+            $package = Get-Item *.nupkg | Select-Object -First 1
+            Write-Host "✓ Created package: $($package.Name)"
+          } else {
+            Write-Warning "No chocolatey package configuration found"
+          }
+
+      - name: Test Chocolatey package installation
+        if: hashFiles('chocolatey/ffmps1.nuspec') != ''
+        shell: pwsh
+        run: |
+          cd chocolatey
+          
+          Write-Host "Testing package installation..."
+          choco install ffmps1 -source . -force -y
+          
+          # Verify module is available
+          $module = Get-Module -ListAvailable FFmpeg
+          if ($module) {
+            Write-Host "✓ Module installed successfully: $($module.Name) v$($module.Version)"
+          } else {
+            Write-Error "Module verification failed!"
+            exit 1
+          }
+
+      - name: Cleanup test installation
+        if: always()
+        shell: pwsh
+        run: |
+          choco uninstall ffmps1 -y 2>$null
+          Write-Host "✓ Cleaned up test installation"
+
+      - name: Upload build artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: chocolatey-package-${{ needs.determine-version.outputs.version }}
+          path: |
+            FFMPS1-v*.zip
+            chocolatey/*.nupkg
+          retention-days: 90
+
+  summary:
+    name: Build Summary
+    runs-on: windows-latest
+    needs: [determine-version, validate-module, build-module-package, build-chocolatey-package]
+    if: always()
+    steps:
+      - name: Check results
+        shell: pwsh
+        run: |
+          $validateResult = "${{ needs.validate-module.result }}"
+          $moduleResult = "${{ needs.build-module-package.result }}"
+          $buildResult = "${{ needs.build-chocolatey-package.result }}"
+          $version = "${{ needs.determine-version.outputs.version }}"
+          $isMain = "${{ needs.determine-version.outputs.is_main }}"
+          
+          Write-Host "=== Build Summary ==="
+          Write-Host "Version: $version"
+          Write-Host "Branch: $(if ($isMain -eq 'true') { 'main (release)' } else { 'dev/feature (prerelease)' })"
+          Write-Host "Module Validation: $validateResult"
+          Write-Host "Module Package: $moduleResult"
+          Write-Host "Chocolatey Package: $buildResult"
+          
+          if ($validateResult -eq "success" -and $moduleResult -eq "success" -and $buildResult -eq "success") {
+            Write-Host "`n✓ All packages built successfully!"
+            if ($isMain -eq 'true') {
+              echo "::notice::Build $version successful - ready for publication to repositories"
+            } else {
+              echo "::notice::Dev build $version successful - packages available as artifacts"
+            }
+          } else {
+            Write-Host "`n✗ Some builds failed. Review the logs above."
+            exit 1
+          }

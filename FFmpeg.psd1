@@ -3,11 +3,15 @@
     RootModule = 'FFmpeg.psm1'
     ModuleVersion = '1.0.0'
     GUID = 'a8f3d2c1-5b4e-4d9a-8c7f-1e2b3c4d5e6f'
-    Author = 'FFmpeg PowerShell Wrapper'
-    CompanyName = 'Community'
-    Copyright = '(c) 2025. All rights reserved.'
+    Author = 'Mark Kelter'
+    CompanyName = 'mrkelter'
+    Copyright = '(c) 2025 Mark Kelter. All rights reserved.'
     Description = 'PowerShell wrapper module for FFmpeg with full discoverability and parameter completion'
     PowerShellVersion = '5.1'
+    
+    # Module requirements
+    RequiredModules = @()
+    RequiredAssemblies = @()
     
     # Functions to export
     FunctionsToExport = @(
@@ -51,10 +55,14 @@
     
     PrivateData = @{
         PSData = @{
-            Tags = @('FFmpeg', 'Video', 'Audio', 'Media', 'Conversion', 'Encoding')
-            LicenseUri = ''
-            ProjectUri = ''
-            ReleaseNotes = 'Initial release with comprehensive FFmpeg wrapper functionality'
+            Tags = @('FFmpeg', 'Video', 'Audio', 'Media', 'Conversion', 'Encoding', 'Multimedia', 'Transcoding')
+            LicenseUri = 'https://github.com/mrkelter/FFMPS1/blob/main/LICENSE'
+            ProjectUri = 'https://github.com/mrkelter/FFMPS1'
+            IconUri = ''
+            ReleaseNotes = 'Initial release with comprehensive FFmpeg wrapper functionality and automatic dependency installation'
+            Prerelease = ''
+            RequireLicenseAcceptance = $false
+            ExternalModuleDependencies = @()
         }
     }
 }

@@ -1,0 +1,6 @@
+This package follows the same license as the FFMPS1 project.
+
+Please see the license at:
+https://github.com/mrkelter/FFMPS1/blob/main/LICENSE
+
+If you need to add a specific license, copy your LICENSE file from the repository root to this location.
